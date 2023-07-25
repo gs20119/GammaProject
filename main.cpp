@@ -18,7 +18,6 @@ Range _;
 
 namespace gamma{
 
-
     template <typename T>
     class Tensor{
     private:
@@ -53,7 +52,7 @@ namespace gamma{
             stride(dim), storage(new T[size], [](T* a){ delete[] a; }){
             stride[dim-1] = 1;
             for(int i=dim-2; i>=0; i--) stride[i] = stride[i+1]*shape[i+1]; iStride = stride;
-            for(int i=0; i<size; i++) storage.get()[i] = x;
+            if(x!=0) for(int i=0; i<size; i++) storage.get()[i] = x;
         }
 
         Tensor(const vector<T>& X, const vector<int>& shape_) :
@@ -127,16 +126,16 @@ namespace gamma{
             return (*this)(loc);
         }
 
-        Tensor operator[](const vector<Range>& order) const{ // slicing, origin = false
+        Tensor get(const vector<Range>& index) const{ // slicing, origin = false
             Tensor ref = Tensor(*this);
             ref.origin = false;
-            if(order.size() > dim) cout << "INDEX DIMENSION ERROR" << endl;
+            if(index.size() > dim) cout << "INDEX DIMENSION ERROR" << endl;
             ref.dim = 0;
             ref.stride.clear(); ref.shape.clear();
             for(int i=0; i<dim; i++){
                 int width = shape[i];
-                int from = (order.size() <= i) ? 0 : ((order[i].from%width)+width)%width;
-                int to = (order.size() <= i) ? width-1 : ((order[i].to%width)+width)%width;
+                int from = (index.size() <= i) ? 0 : ((index[i].from%width)+width)%width;
+                int to = (index.size() <= i) ? width-1 : ((index[i].to%width)+width)%width;
                 ref.offset += from*stride[i];
                 if(from > to) cout << "RANGE DOESN'T CONTAIN ANYTHING" << endl;
                 if(from < to){
@@ -151,9 +150,15 @@ namespace gamma{
             return ref;
         }
 
+        template <typename... Args>
+        Tensor get(Args... args){
+            vector<Range> index{args...};
+            return get(index);
+        }
+
         Tensor operator[](Range r) const{
             vector<Range> order{r};
-            return (*this)[order];
+            return get(order);
         }
 
 
@@ -209,17 +214,21 @@ namespace gamma{
 
 
 int main() {
-    vector<int> V(18);
-    vector<int> D = {3,2,3};
-    gamma::Tensor<int> X(V, D);
-    gamma::Tensor<int> Y({1,2,3,4}, {2,2});
-    gamma::Tensor<int> Z({1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5, 6, 7}, {3,3,3});
-    cout << X << Y << Z << endl;
-    Y = Z[0];
-    cout << Y;
-    Y(1,0) = 10;
-    cout << Z;
-    Y[{_,2}] = gamma::Tensor<int>({20,20,20});
-    cout << Z;
+    clock_t start, fin;
+    double duration;
+    start = clock();
+
+    for(int ITER=0; ITER<5; ITER++){
+        gamma::Tensor<int> T(0,{10, 1000, 1000});
+        for(int i=0; i<10; i++){
+            gamma::Tensor<int> X(i,{1000, 1000});
+            T[i] = X.copy();
+            for(int j=0; j<1000; j++) T(i,j,j) = 0;
+        }
+    }
+
+    fin = clock();
+    duration = (double)(fin-start)/CLOCKS_PER_SEC;
+    cout << duration << endl;
     return 0;
 }
