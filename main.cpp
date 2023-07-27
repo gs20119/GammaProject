@@ -30,7 +30,6 @@ namespace gamma{
         int dim;
         vector<int> shape;
         vector<int> stride;
-        vector<int> iStride;
         int offset, size;
         shared_ptr<T> storage;
         bool origin = true;
@@ -43,7 +42,7 @@ namespace gamma{
 
         explicit Tensor(const vector<T>& X) :
             size(X.size()), dim(1), offset(0), shape({(int)X.size()}),
-            stride({1}), iStride({1}), storage(new T[size], [](T* a){ delete[] a; }){
+            stride({1}), storage(new T[size], [](T* a){ delete[] a; }){
             for(int i=0; i<size; i++) storage.get()[i] = X[i];
         }
 
@@ -51,7 +50,7 @@ namespace gamma{
             dim(shape_.size()), offset(0), shape(shape_), size(shapeSize(shape)),
             stride(dim), storage(new T[size], [](T* a){ delete[] a; }){
             stride[dim-1] = 1;
-            for(int i=dim-2; i>=0; i--) stride[i] = stride[i+1]*shape[i+1]; iStride = stride;
+            for(int i=dim-2; i>=0; i--) stride[i] = stride[i+1]*shape[i+1];
             if(x!=0) for(int i=0; i<size; i++) storage.get()[i] = x;
         }
 
@@ -60,13 +59,13 @@ namespace gamma{
             stride(dim), storage(new T[size], [](T* a){ delete[] a; }){
             if(X.size() != size) cout << "FAILURE TO INITIALIZE GAMMA TENSOR";
             stride[dim-1] = 1;
-            for(int i=dim-2; i>=0; i--) stride[i] = stride[i+1]*shape[i+1]; iStride = stride;
+            for(int i=dim-2; i>=0; i--) stride[i] = stride[i+1]*shape[i+1];
             for(int i=0; i<size; i++) storage.get()[i] = X[i];
         }
 
         Tensor(const Tensor& M) : // share storage
             size(M.size), dim(M.dim), offset(M.offset), shape(M.shape),
-            stride(M.stride), iStride(M.iStride), storage(M.storage){}
+            stride(M.stride), storage(M.storage){}
 
 
 
@@ -77,17 +76,16 @@ namespace gamma{
         void operator=(const Tensor& M){
             if(origin){ // share storage
                 size = M.size; dim = M.dim; offset = M.offset;
-                shape = M.shape; stride = M.stride; iStride = M.iStride;
+                shape = M.shape; stride = M.stride;
                 storage.reset(); storage = M.storage; return;
             }
             if(shape != M.shape)
                 cout << "ASSIGNING WRONG SHAPE TO SUBTENSOR" << endl;
             vector<int> loc(dim);
             for(int i=0; i<size; i++){
-                loc[0] = (int)i/M.iStride[0];
-                for(int j=1; j<dim; j++)
-                    loc[j] = (int)(i%M.iStride[j-1])/M.iStride[j];
-                (*this)(loc) = M(loc);
+                (*this)(loc) = M(loc); loc[dim-1]++;
+                for(int j=dim-1; j>0; j--)
+                    if(loc[j]==shape[j]){ loc[j]=0; loc[j-1]++; }
             }
         }
 
@@ -97,10 +95,9 @@ namespace gamma{
             vector<int> iStride(dim); iStride[dim-1]=1;
             for(int i=dim-2; i>=0; i--) iStride[i]=iStride[i+1]*shape[i+1];
             for(int i=0; i<M.size; i++){
-                loc[0] = (int)i/M.iStride[0];
-                for(int j=1; j<M.dim; j++)
-                    loc[j] = (int)(i%M.iStride[j-1])/M.iStride[j];
-                M.storage.get()[i] = (*this)(loc);
+                M.storage.get()[i] = (*this)(loc); loc[dim-1]++;
+                for(int j=dim-1; j>0; j--)
+                    if(loc[j]==shape[j]){ loc[j]=0; loc[j-1]++; }
             }
             return M;
         }
@@ -142,11 +139,8 @@ namespace gamma{
                     ref.shape.push_back(to-from+1); ref.dim++;
                     ref.stride.push_back(stride[i]);
                 }
-            }
-            ref.iStride = vector<int>(ref.dim); ref.iStride[ref.dim-1]=1;
-            for(int i=ref.dim-2; i>=0; i--)
-                ref.iStride[i]=ref.iStride[i+1]*ref.shape[i+1];
-            ref.size = 1; for(int d : ref.shape) ref.size *= d;
+            }ref.size = 1;
+            for(int d : ref.shape) ref.size *= d;
             return ref;
         }
 
@@ -171,12 +165,12 @@ namespace gamma{
             cout << "[";
             vector<int> loc(M.dim);
             for(int i=0; i<M.size; i++){
-                loc[0] = (int)i/M.iStride[0];
-                for(int j=1; j<M.dim; j++) loc[j] = (int)(i%M.iStride[j-1])/M.iStride[j];
                 for(int j=0; j<M.dim-1; j++) if(i % M.stride[j] == 0) cout << "[";
                 cout << M(loc);
                 for(int j=0; j<M.dim-1; j++) if((i+1) % M.stride[j] == 0) cout << "]";
                 if(i != M.size-1) cout << ", ";
+                for(int j=M.dim-1; j>0; j--)
+                    if(loc[j]==M.shape[j]){ loc[j]=0; loc[j-1]++; }
             }
             cout << "]" << endl;
             return out;
@@ -218,12 +212,12 @@ int main() {
     double duration;
     start = clock();
 
-    for(int ITER=0; ITER<5; ITER++){
+    for(int ITER=0; ITER<30; ITER++){
         gamma::Tensor<int> T(0,{10, 1000, 1000});
         for(int i=0; i<10; i++){
             gamma::Tensor<int> X(i,{1000, 1000});
+            for(int j=0; j<1000; j++) X(j,j) = 0;
             T[i] = X.copy();
-            for(int j=0; j<1000; j++) T(i,j,j) = 0;
         }
     }
 
