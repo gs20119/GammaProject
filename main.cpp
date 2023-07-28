@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include <math.h>
 using namespace std;
 
 struct Range{
@@ -22,18 +23,16 @@ namespace gamma{
     template <typename T>
     class Tensor{
     private:
-        int shapeSize(const vector<int>& shape_){
-            int s=1; for(int d : shape_) s *= d;
-            return s;
-        }
-
-    protected:
         int dim;
         vector<int> shape;
         vector<int> stride;
         int offset, size;
         shared_ptr<T> storage;
         bool origin = true;
+        int shapeSize(const vector<int>& shape_){
+            int s=1; for(int d : shape_) s *= d;
+            return s;
+        }
 
     public:
 
@@ -41,13 +40,13 @@ namespace gamma{
          ************************************ Constructor ************************************
          ************************************************************************************/
 
-        Tensor(const vector<T>& X) :
+        explicit Tensor(const vector<T>& X) :
             size(X.size()), dim(1), offset(0), shape({(int)X.size()}),
             stride({1}), storage(new T[size], [](T* a){ delete[] a; }){
             for(int i=0; i<size; i++) storage.get()[i] = X[i];
         }
 
-        Tensor(T x, const vector<int>& shape_={1}) :
+        explicit Tensor(T x, const vector<int>& shape_={1}) :
             dim(shape_.size()), offset(0), shape(shape_), size(shapeSize(shape)),
             stride(dim), storage(new T[size], [](T* a){ delete[] a; }){
             stride[dim-1] = 1;
@@ -186,7 +185,6 @@ namespace gamma{
             foreach([&func](Tensor& this_, const vector<int>& loc){
                 func(this_(loc));
             });
-
         }
 
         /*************************************************************************************
@@ -218,15 +216,16 @@ namespace gamma{
 
     template <typename T>
     class Variable{
-    private:
+    public:
         Tensor<T> body;
         Tensor<T> grad;
 
-    public:
-        Variable(const vector<T>& X) : body(X), grad(0,body.shape){}
-        Variable(T x, const vector<int>& shape_) : body(x,shape_), grad(0,body.shape){}
+        explicit Variable(): body(0), grad(0,body.shape){}
+        explicit Variable(const vector<T>& X) : body(X), grad(0,body.shape){}
+        explicit Variable(T x, const vector<int>& shape_={1}) : body(x,shape_), grad(0,body.shape){}
         Variable(const vector<T>& X, const vector<int>& shape_) : body(X,shape_), grad(0,body.shape){}
-        Variable(const Tensor<T>& M) : body(M), grad(0,body.shape){}
+        explicit Variable(const Tensor<T>& M) : body(M), grad(0,body.shape){}
+
         Variable(const Variable& x) : body(x.body), grad(x.grad){}
         void operator=(const Variable& x){ body = x.body; grad = x.grad; }
 
@@ -235,29 +234,60 @@ namespace gamma{
             return out;
         }
         template <typename From, typename To> friend class Function;
+
     };
 
 
     template <typename From, typename To>
     class Function{
+    protected:
+        Variable<From> input;
     public:
-        Variable<To> operator()(const Variable<From>& input){
+        Variable<To> operator()(const Variable<From>& input_){
+            input = input_;
             Tensor<From> x = input.body;
             Tensor<To> y = forward(x);
             return Variable<To>(y);
         }
         virtual Tensor<To> forward(const Tensor<From> x) const {}
+        virtual Tensor<From> backward(const Tensor<To> dLdy) const {}
     };
 
     template <typename T>
-    class Square : public Function<T,T>{
+    class Square: public Function<T,T>{
+    public:
         Tensor<T> forward(const Tensor<T> x) const override{
             Tensor<T> y = x.copy();
-            y.apply([](T& p){ p = p*p; });
+            y.apply([](T& t){ t = t*t; }); // y = x*x
             return y;
+        }
+        Tensor<T> backward(const Tensor<T> dLdy) const override{
+            Tensor<T> dLdx = dLdy.copy();
+            Tensor<T> x = Function<T,T>::input.body;
+            dLdx.foreach([&x](Tensor<T>& this_, const vector<int>& loc){
+                this_(loc) *= 2*x(loc); // dLdx = 2*x*dLdy
+            });
+            return dLdx;
         }
     };
 
+    template <typename T>
+    class Exp: public Function<T,T>{
+    public:
+        Tensor<T> forward(const Tensor<T> x) const override{
+            Tensor<T> y = x.copy();
+            y.apply([](T& p){ p = exp(p); }); // y = e^x
+            return y;
+        }
+        Tensor<T> backward(const Tensor<T> dLdy) const override{
+            Tensor<T> dLdx = dLdy.copy();
+            Tensor<T> x = Function<T,T>::input.body;
+            dLdx.foreach([&x](Tensor<T>& this_, const vector<int>& loc){
+                this_(loc) *= exp(x(loc));
+            });
+            return dLdx;
+        }
+    };
 
 }
 
@@ -267,11 +297,24 @@ namespace gamma{
 
 
 int main() {
-    gamma::Variable<float> X(1.0,{3,3});
-    gamma::Variable<float> Y({1,2,3,4});
-    cout << X << Y;
+
+    gamma::Variable<float> x(0.5);
+    cout << x;
+
     auto f = gamma::Square<float>();
-    gamma::Variable<float> Z = f(Y);
-    cout << Z;
+    auto g = gamma::Exp<float>();
+    auto h = gamma::Square<float>();
+
+    auto A = f(x);
+    auto B = g(A);
+    auto C = h(B);
+    cout << C;
+
+    C.grad = gamma::Tensor<float>(1);
+    B.grad = h.backward(C.grad);
+    A.grad = g.backward(B.grad);
+    x.grad = f.backward(A.grad);
+    cout << x.grad;
+
     return 0;
 }
