@@ -4,6 +4,7 @@
 #include <iostream>
 #include <vector>
 #include <memory>
+#include <functional>
 using namespace std;
 
 struct Range{
@@ -40,13 +41,13 @@ namespace gamma{
          ************************************ Constructor ************************************
          ************************************************************************************/
 
-        explicit Tensor(const vector<T>& X) :
+        Tensor(const vector<T>& X) :
             size(X.size()), dim(1), offset(0), shape({(int)X.size()}),
             stride({1}), storage(new T[size], [](T* a){ delete[] a; }){
             for(int i=0; i<size; i++) storage.get()[i] = X[i];
         }
 
-        Tensor(int x, const vector<int>& shape_) :
+        Tensor(T x, const vector<int>& shape_={1}) :
             dim(shape_.size()), offset(0), shape(shape_), size(shapeSize(shape)),
             stride(dim), storage(new T[size], [](T* a){ delete[] a; }){
             stride[dim-1] = 1;
@@ -57,7 +58,7 @@ namespace gamma{
         Tensor(const vector<T>& X, const vector<int>& shape_) :
             dim(shape_.size()), offset(0), shape(shape_), size(shapeSize(shape)),
             stride(dim), storage(new T[size], [](T* a){ delete[] a; }){
-            if(X.size() != size) cout << "FAILURE TO INITIALIZE GAMMA TENSOR";
+            if(X.size() != size) cout << "FAILURE TO INITIALIZE GAMMA TENSOR" << endl;
             stride[dim-1] = 1;
             for(int i=dim-2; i>=0; i--) stride[i] = stride[i+1]*shape[i+1];
             for(int i=0; i<size; i++) storage.get()[i] = X[i];
@@ -70,7 +71,7 @@ namespace gamma{
 
 
         /*************************************************************************************
-         ***************************** Copy and Assign Operator ******************************
+         ******************************** Copy and Assignment ********************************
          ************************************************************************************/
 
         void operator=(const Tensor& M){
@@ -79,14 +80,10 @@ namespace gamma{
                 shape = M.shape; stride = M.stride;
                 storage.reset(); storage = M.storage; return;
             }
-            if(shape != M.shape)
-                cout << "ASSIGNING WRONG SHAPE TO SUBTENSOR" << endl;
-            vector<int> loc(dim);
-            for(int i=0; i<size; i++){
-                (*this)(loc) = M(loc); loc[dim-1]++;
-                for(int j=dim-1; j>0; j--)
-                    if(loc[j]==shape[j]){ loc[j]=0; loc[j-1]++; }
-            }
+            if(shape != M.shape) cout << "ASSIGNING WRONG SHAPE TO SUBTENSOR" << endl;
+            foreach([&M](Tensor& this_, const vector<int>& loc){
+                this_(loc) = M(loc);
+            });
         }
 
         Tensor copy() const{
@@ -158,6 +155,41 @@ namespace gamma{
 
 
         /*************************************************************************************
+         ********************** Operations that Preserve the Original ************************
+         ************************************************************************************/
+
+        Tensor operator+(const Tensor M) const{
+            Tensor out = (*this).copy();
+            if(shape != M.shape) cout << "DIMENSION ERROR WHILE PERFORMING +" << endl;
+            out.foreach([&M](Tensor& this_, const vector<int>& loc){
+                this_(loc) += M(loc);
+            });
+            return out;
+        }
+
+
+
+        /*************************************************************************************
+         ***************************** Operations that Doesn't *******************************
+         ************************************************************************************/
+
+        void foreach(function<void(Tensor&, const vector<int>&)> process){
+            vector<int> loc(dim);
+            for(int i=0; i<size; i++){
+                process(*this, loc); loc[dim-1]++;
+                for(int j=dim-1; j>0; j--)
+                    if(loc[j]==shape[j]){ loc[j]=0; loc[j-1]++; }
+            }
+        }
+
+        void apply(function<void(T&)> func){
+            foreach([&func](Tensor& this_, const vector<int>& loc){
+                func(this_(loc));
+            });
+
+        }
+
+        /*************************************************************************************
          *************************************** Misc. ***************************************
          ************************************************************************************/
 
@@ -168,7 +200,7 @@ namespace gamma{
                 for(int j=0; j<M.dim-1; j++) if(i % M.stride[j] == 0) cout << "[";
                 cout << M(loc);
                 for(int j=0; j<M.dim-1; j++) if((i+1) % M.stride[j] == 0) cout << "]";
-                if(i != M.size-1) cout << ", ";
+                if(i != M.size-1) cout << ", "; loc[M.dim-1]++;
                 for(int j=M.dim-1; j>0; j--)
                     if(loc[j]==M.shape[j]){ loc[j]=0; loc[j-1]++; }
             }
@@ -189,16 +221,43 @@ namespace gamma{
     private:
         Tensor<T> body;
         Tensor<T> grad;
-    public:
 
+    public:
+        Variable(const vector<T>& X) : body(X), grad(0,body.shape){}
+        Variable(T x, const vector<int>& shape_) : body(x,shape_), grad(0,body.shape){}
+        Variable(const vector<T>& X, const vector<int>& shape_) : body(X,shape_), grad(0,body.shape){}
+        Variable(const Tensor<T>& M) : body(M), grad(0,body.shape){}
+        Variable(const Variable& x) : body(x.body), grad(x.grad){}
+        void operator=(const Variable& x){ body = x.body; grad = x.grad; }
+
+        friend ostream& operator<<(ostream& out, Variable M){
+            cout << "Variable of " << M.body;
+            return out;
+        }
+        template <typename From, typename To> friend class Function;
     };
+
 
     template <typename From, typename To>
     class Function{
-
     public:
-        To operator()(const From& x){};
+        Variable<To> operator()(const Variable<From>& input){
+            Tensor<From> x = input.body;
+            Tensor<To> y = forward(x);
+            return Variable<To>(y);
+        }
+        virtual Tensor<To> forward(const Tensor<From> x) const {}
     };
+
+    template <typename T>
+    class Square : public Function<T,T>{
+        Tensor<T> forward(const Tensor<T> x) const override{
+            Tensor<T> y = x.copy();
+            y.apply([](T& p){ p = p*p; });
+            return y;
+        }
+    };
+
 
 }
 
@@ -208,21 +267,11 @@ namespace gamma{
 
 
 int main() {
-    clock_t start, fin;
-    double duration;
-    start = clock();
-
-    for(int ITER=0; ITER<30; ITER++){
-        gamma::Tensor<int> T(0,{10, 1000, 1000});
-        for(int i=0; i<10; i++){
-            gamma::Tensor<int> X(i,{1000, 1000});
-            for(int j=0; j<1000; j++) X(j,j) = 0;
-            T[i] = X.copy();
-        }
-    }
-
-    fin = clock();
-    duration = (double)(fin-start)/CLOCKS_PER_SEC;
-    cout << duration << endl;
+    gamma::Variable<float> X(1.0,{3,3});
+    gamma::Variable<float> Y({1,2,3,4});
+    cout << X << Y;
+    auto f = gamma::Square<float>();
+    gamma::Variable<float> Z = f(Y);
+    cout << Z;
     return 0;
 }
