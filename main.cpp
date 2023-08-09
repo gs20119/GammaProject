@@ -37,11 +37,6 @@ namespace gamma{
         }
 
     public:
-
-        /*************************************************************************************
-         ************************************ Constructor ************************************
-         ************************************************************************************/
-
         explicit Tensor(const vector<T>& X) :
                 size(X.size()), dim(1), offset(0), shape({(int)X.size()}),
                 stride({1}), storage(new T[size], [](T* a){ delete[] a; }){
@@ -53,7 +48,7 @@ namespace gamma{
                 stride(dim), storage(new T[size], [](T* a){ delete[] a; }){
             stride[dim-1] = 1;
             for(int i=dim-2; i>=0; i--) stride[i] = stride[i+1]*shape[i+1];
-            if(x!=0) for(int i=0; i<size; i++) storage.get()[i] = x;
+            for(int i=0; i<size; i++) storage.get()[i] = x;
         }
 
         Tensor(const vector<T>& X, const vector<int>& shape_) :
@@ -71,19 +66,14 @@ namespace gamma{
 
         ~Tensor(){ storage.reset(); }
 
-
-
-        /*************************************************************************************
-         ******************************** Copy and Assignment ********************************
-         ************************************************************************************/
-
-        void operator=(const Tensor& M){
+        Tensor& operator=(const Tensor& M){
             if(original){ // share storage
                 size = M.size; dim = M.dim; offset = M.offset;
                 shape = M.shape; stride = M.stride;
-                storage.reset(); storage = M.storage; return;
+                storage.reset(); storage = M.storage; return (*this);
             }
             copy(M);
+            return (*this);
         }
 
         Tensor copy() const{
@@ -105,12 +95,6 @@ namespace gamma{
                 this_(loc) = M(loc);
             });
         }
-
-
-
-        /*************************************************************************************
-         ******************************* Indexing and Slicing ********************************
-         ************************************************************************************/
 
         T& operator()(const vector<int>& loc) const{
             int idx = offset;
@@ -152,26 +136,18 @@ namespace gamma{
         Tensor get(Args... args) const{ return get({args...}); }
         Tensor operator[](Range r) const{ return get({r}); }
 
-
-
-        /*************************************************************************************
-         ********************** Operations that Preserve the Original ************************
-         ************************************************************************************/
-
-        Tensor operator+(const Tensor& M) const{
-            Tensor out = (*this).copy();
-            if(shape != M.shape) cout << "DIMENSION ERROR WHILE PERFORMING +" << endl;
-            out.foreach([&M](Tensor& this_, const vector<int>& loc){
+        Tensor& operator +=(const Tensor& M){
+            if(shape != M.shape) cout << "DIMENSION ERROR WHILE PERFORMING +=" << endl;
+            foreach([&M](Tensor& this_, const vector<int>& loc){
                 this_(loc) += M(loc);
             });
-            return out;
+            return (*this);
         }
 
-
-
-        /*************************************************************************************
-         ***************************** Operations that Doesn't *******************************
-         ************************************************************************************/
+        Tensor operator+(const Tensor& M) const{
+            if(shape != M.shape) cout << "DIMENSION ERROR WHILE PERFORMING +" << endl;
+            return this->copy() += M;
+        }
 
         void foreach(function<void(Tensor&, const vector<int>&)> process){
             vector<int> loc(dim);
@@ -188,10 +164,6 @@ namespace gamma{
             });
         }
 
-        /*************************************************************************************
-         *************************************** Misc. ***************************************
-         ************************************************************************************/
-
         friend ostream& operator<<(ostream& out, Tensor M){
             cout << "[";
             vector<int> loc(M.dim);
@@ -207,7 +179,7 @@ namespace gamma{
             return out;
         }
 
-        template <typename T_> friend class Variable;
+        template <typename K> friend class Variable;
         friend class Function;
     };
 
@@ -216,45 +188,52 @@ namespace gamma{
     class Function;
     class Variadic{
     public:
-        Variadic(){}
-        virtual ~Variadic(){}
+        Variadic() = default;
+        virtual ~Variadic() = default;
         virtual void setFunc(shared_ptr<Function> f){}
         virtual shared_ptr<Function> getFunc(){}
+        virtual void addUser(shared_ptr<Function> f){}
     };
 
     template <typename T>
-    class Variable : public Variadic{
+    class Variable : public Variadic{ // use capsule
     protected:
     public:
         typedef shared_ptr<Function> sFunc;
         Tensor<T> body;
         Tensor<T> grad;
-        sFunc func = nullptr;
+        sFunc builder = nullptr;
+        vector<sFunc> user;
 
-        explicit Variable(): body(0), grad(1,body.shape){}
-        explicit Variable(const vector<T>& X) : body(X), grad(1,body.shape){}
-        explicit Variable(T x, const vector<int>& shape_={1}) : body(x,shape_), grad(1,body.shape){}
-        Variable(const vector<T>& X, const vector<int>& shape_) : body(X,shape_), grad(1,body.shape){}
-        explicit Variable(const Tensor<T>& M) : body(M), grad(1,body.shape){}
+        explicit Variable(): body(0.0), grad(0.0,body.shape){}
+        explicit Variable(const vector<T>& X) : body(X), grad(0.0,body.shape){}
+        explicit Variable(T x, const vector<int>& shape_={1}) : body(x,shape_), grad(0.0,body.shape){}
+        Variable(const vector<T>& X, const vector<int>& shape_) : body(X,shape_), grad(0.0,body.shape){}
+        explicit Variable(const Tensor<T>& M) : body(M), grad(0.0,body.shape){}
 
-        Variable(const Variable& x) : body(x.body), grad(x.grad), func(x.func){}
-        void operator=(const Variable& x){ body = x.body; grad = x.grad; func = x.func; }
-        void setFunc(sFunc f) override{ func = f; }
-        shared_ptr<Function> getFunc() override{ return func; }
+        Variable(const Variable& x) : body(x.body), grad(x.grad), builder(x.func){}
+        void operator=(const Variable& x){ body = x.body; grad = x.grad; builder = x.func; }
+        void setFunc(sFunc f) override{ builder = f; }
+        void addUser(sFunc f) override{ user.push_back(f); }
+        shared_ptr<Function> getFunc() override{ return builder; }
 
-        ~Variable() override{ func.reset(); }
+        ~Variable() override{ builder.reset(); }
 
         void backward();
-        friend ostream& operator<<(ostream& out, Variable M){
-            cout << "Variable of " << M.body;
-            return out;
-        }
-
+        void print(){ cout << "Variable of " << body; }
+        void printGrad(){ cout << "Gradient " << grad; }
         friend class Function;
     };
 
     typedef shared_ptr<Variadic> sVar;
     typedef vector<sVar> Variables;
+    template <typename T>
+    using something = shared_ptr<Variable<T>>;
+
+    template <typename T, typename... Args>
+    something<T> make(Args... args){
+        return make_shared<Variable<T>>(args...);
+    }
 
     class Function{
     protected:
@@ -268,9 +247,10 @@ namespace gamma{
         template <typename T> friend class Variable;
     };
 
-    template <typename T>
+    template <typename T> // gotta remake this using topology sort
     void Variable<T>::backward(){
-        vector<sFunc> path{func};
+        grad = Tensor<T>(1,body.shape);
+        vector<sFunc> path{builder};
         while(!path.empty()){
             shared_ptr<Function> f = *(path.end()-1);
             path.pop_back();
@@ -282,6 +262,8 @@ namespace gamma{
         }
     }
 
+
+
     template <typename T>
     class Square: public Function{
     protected:
@@ -290,16 +272,15 @@ namespace gamma{
     public:
         Square():Function(){}
         ~Square() override = default;
+
         Variables forward(Variables input_) override{
             input = input_;
             X = dynamic_pointer_cast<Variable<T>>(input[0]);
-            Y = make_shared<Variable<T>>(forward(X->body));
+            Y = make<T>(forward(X->body));
             output = Variables{Y};
             return output;
         }
-        void backward() override{
-            X->grad.copy(backward(Y->grad, X->body));
-        }
+        void backward() override{ X->grad += backward(Y->grad, X->body); }
         Tensor<T> forward(const Tensor<T>& x) const{
             Tensor<T> y = x.copy();
             y.apply([](T& t){ t = t*t; }); // y = x*x
@@ -312,23 +293,26 @@ namespace gamma{
             });
             return dLdx;
         }
-        friend Variable<T> square(Variable<T>& x);
+
+        friend something<T> square(something<T> x);
     };
 
     template <typename T>
-    Variable<T> square(Variable<T>& x){
+    something<T> square(something<T> x_){
         shared_ptr<Function> f = make_shared<Square<T>>();
-        Variables X{make_shared<Variable<T>>(x)};
+        Variables X{x_};
         Variables Y = f->forward(X);
+        for(sVar x : X) x->addUser(f);
         for(sVar y : Y) y->setFunc(f);
-        return *dynamic_pointer_cast<Variable<T>>(Y[0]);
+        return dynamic_pointer_cast<Variable<T>>(Y[0]);
     }
+
+
 
     template <typename T>
     class Exp: public Function{
     protected:
-        typedef shared_ptr<Variable<T>> sVarT;
-        sVarT X, Y;
+        something<T> X, Y;
     public:
 
         Exp():Function(){}
@@ -336,13 +320,12 @@ namespace gamma{
         Variables forward(Variables input_) override{
             input = input_;
             X = dynamic_pointer_cast<Variable<T>>(input[0]);
-            Y = make_shared<Variable<T>>(forward(X->body));
+            Y = make<T>(forward(X->body));
             output = Variables{Y};
             return output;
         }
-        void backward() override{
-            X->grad.copy(backward(Y->grad, X->body));
-        }
+        void backward() override{ X->grad += backward(Y->grad, X->body); }
+
         Tensor<T> forward(const Tensor<T>& x) const{
             Tensor<T> y = x.copy();
             y.apply([](T& p){ p = exp(p); }); // y = e^x
@@ -355,23 +338,25 @@ namespace gamma{
             });
             return dLdx;
         }
-        friend Variable<T> exp(Variable<T>& x);
+        friend something<T> exp(something<T> x);
     };
 
     template <typename T>
-    Variable<T> exp(Variable<T>& x){
+    something<T> exp(something<T> x_){
         shared_ptr<Function> f = make_shared<Exp<T>>();
-        Variables X{make_shared<Variable<T>>(x)};
+        Variables X{x_};
         Variables Y = f->forward(X);
+        for(sVar x : X) x->addUser(f);
         for(sVar y : Y) y->setFunc(f);
-        return *dynamic_pointer_cast<Variable<T>>(Y[0]);
+        return dynamic_pointer_cast<Variable<T>>(Y[0]);
     }
+
+
 
     template <typename T>
     class Add: public Function{
     protected:
-        typedef shared_ptr<Variable<T>> sVarT;
-        sVarT X1, X2, Y;
+        something<T> X1, X2, Y;
     public:
         Add():Function(){}
         ~Add() override = default;
@@ -379,13 +364,13 @@ namespace gamma{
             input = input_;
             X1 = dynamic_pointer_cast<Variable<T>>(input[0]);
             X2 = dynamic_pointer_cast<Variable<T>>(input[1]);
-            Y = make_shared<Variable<T>>(forward(X1->body, X2->body));
+            Y = make<T>(forward(X1->body, X2->body));
             output = Variables{Y};
             return output;
         }
         void backward() override{
-            X1->grad.copy(backward(Y->grad));
-            X2->grad.copy(backward(Y->grad));
+            X1->grad += backward(Y->grad);
+            X2->grad += backward(Y->grad);
         }
         Tensor<T> forward(const Tensor<T>& x1, const Tensor<T>& x2) const{
             Tensor<T> y = x1.copy();
@@ -398,18 +383,19 @@ namespace gamma{
             Tensor<T> dLdx = dLdy.copy();
             return dLdx;
         }
-        friend Variable<T> add(Variable<T> x1, Variable<T> x2);
+        friend something<T> add(something<T> x1, something<T> x2);
     };
 
     template <typename T>
-    Variable<T> add(Variable<T> x1, Variable<T> x2){
+    something<T> add(something<T> x1, something<T> x2){
         shared_ptr<Function> f = make_shared<Add<T>>();
-        Variables X{make_shared<Variable<T>>(x1),
-                    make_shared<Variable<T>>(x2)};
+        Variables X{x1,x2};
         Variables Y = f->forward(X);
+        for(sVar x : X) x->addUser(f);
         for(sVar y : Y) y->setFunc(f);
-        return *dynamic_pointer_cast<Variable<T>>(Y[0]);
+        return dynamic_pointer_cast<Variable<T>>(Y[0]);
     }
+
 }
 
 
@@ -418,22 +404,31 @@ namespace gamma{
 
 
 int main() {
-    gamma::Variable<float> x(0.5);
+
+    auto x = gamma::make<float>(0.5);
     auto A = gamma::square(x);
     auto B = gamma::exp(A);
     auto C = gamma::square(B);
-    cout << C;
+    C->print();
 
-    C.backward();
-    cout << x.grad << endl;
+    C->backward();
+    C->printGrad();
+    B->printGrad();
+    A->printGrad();
+    x->printGrad();
 
-    gamma::Variable<double> y(2.0);
-    gamma::Variable<double> z(3.0);
+    auto y = gamma::make<double>(2.0);
+    auto z = gamma::make<double>(3.0);
     auto w = gamma::add(gamma::square(y), gamma::square(z));
-    cout << w;
+    auto k = gamma::add(y,y);
+    auto v = gamma::add(w,k); // v = (y^2+z^2)+2y
+    w->print(); k->print();
+    v->print();
 
-    w.backward();
-    cout << y.grad << z.grad << endl;
+    v->backward();
+    k->printGrad();
+    w->printGrad();
+    y->printGrad();
 
     return 0;
 }
