@@ -7,6 +7,7 @@
 #include <memory>
 #include <functional>
 #include <stack>
+#include <queue>
 #include <cmath>
 using namespace std;
 
@@ -188,44 +189,34 @@ namespace gamma{
     class Function;
     class Variadic{
     public:
+        typedef shared_ptr<Function> sFunc;
+        sFunc creator = nullptr;
+        int users, calls = 0;
+        bool visit = false;
         Variadic() = default;
         virtual ~Variadic() = default;
-        virtual void setFunc(shared_ptr<Function> f){}
-        virtual shared_ptr<Function> getFunc(){}
-        virtual void addUser(shared_ptr<Function> f){}
     };
 
     template <typename T>
     class Variable : public Variadic{ // use capsule
-    protected:
     public:
-        typedef shared_ptr<Function> sFunc;
         Tensor<T> body;
         Tensor<T> grad;
-        sFunc builder = nullptr;
-        vector<sFunc> user;
-
         explicit Variable(): body(0.0), grad(0.0,body.shape){}
         explicit Variable(const vector<T>& X) : body(X), grad(0.0,body.shape){}
         explicit Variable(T x, const vector<int>& shape_={1}) : body(x,shape_), grad(0.0,body.shape){}
         Variable(const vector<T>& X, const vector<int>& shape_) : body(X,shape_), grad(0.0,body.shape){}
         explicit Variable(const Tensor<T>& M) : body(M), grad(0.0,body.shape){}
 
-        Variable(const Variable& x) : body(x.body), grad(x.grad), builder(x.func){}
-        void operator=(const Variable& x){ body = x.body; grad = x.grad; builder = x.func; }
-        void setFunc(sFunc f) override{ builder = f; }
-        void addUser(sFunc f) override{ user.push_back(f); }
-        shared_ptr<Function> getFunc() override{ return builder; }
-
-        ~Variable() override{ builder.reset(); }
-
         void backward();
         void print(){ cout << "Variable of " << body; }
         void printGrad(){ cout << "Gradient " << grad; }
+        ~Variable(){ cout << "RESET" << endl; }
         friend class Function;
     };
 
     typedef shared_ptr<Variadic> sVar;
+    typedef weak_ptr<Variadic> wVar;
     typedef vector<sVar> Variables;
     template <typename T>
     using something = shared_ptr<Variable<T>>;
@@ -238,49 +229,64 @@ namespace gamma{
     class Function{
     protected:
         Variables input;
-        Variables output;
+        wVar output;
     public:
         Function() = default;
         virtual ~Function() = default;
-        virtual Variables forward(Variables input_){}
+        virtual sVar forward(Variables input_){}
         virtual void backward(){}
         template <typename T> friend class Variable;
     };
 
-    template <typename T> // gotta remake this using topology sort
+
+    template <typename T>
     void Variable<T>::backward(){
         grad = Tensor<T>(1,body.shape);
-        vector<sFunc> path{builder};
-        while(!path.empty()){
-            shared_ptr<Function> f = *(path.end()-1);
-            path.pop_back();
+        queue<sFunc> path;
+        path.push(creator); visit=true;
+        while(!path.empty()){ // simple BFS
+            shared_ptr<Function> f = path.front();
+            path.pop();
+            for(sVar x : f->input){
+                if(!(x->visit)){ x->calls=0; x->users=0; }
+                x->users++;
+                shared_ptr<Function> g = x->creator;
+                if(g != nullptr && !(x->visit)) path.push(g);
+                x->visit = true;
+            }
+        }
+        path.push(creator);
+        while(!path.empty()){ // topological sort
+            shared_ptr<Function> f = path.front();
+            path.pop();
             f->backward();
             for(sVar x : f->input){
-                shared_ptr<Function> g = x->getFunc();
-                if(g != nullptr) path.push_back(g);
+                x->calls++;
+                shared_ptr<Function> g = x->creator;
+                if(g != nullptr && x->calls == x->users)
+                    path.push(g);
             }
         }
     }
 
 
-
     template <typename T>
     class Square: public Function{
-    protected:
-        typedef shared_ptr<Variable<T>> sVarT;
-        sVarT X, Y;
     public:
         Square():Function(){}
         ~Square() override = default;
-
-        Variables forward(Variables input_) override{
+        sVar forward(Variables input_) override{
             input = input_;
-            X = dynamic_pointer_cast<Variable<T>>(input[0]);
-            Y = make<T>(forward(X->body));
-            output = Variables{Y};
-            return output;
+            something<T> X = dynamic_pointer_cast<Variable<T>>(input[0]);
+            something<T> Y = make<T>(forward(X->body));
+            output = Y;
+            return output.lock();
         }
-        void backward() override{ X->grad += backward(Y->grad, X->body); }
+        void backward() override{
+            something<T> X = dynamic_pointer_cast<Variable<T>>(input[0]);
+            something<T> Y = dynamic_pointer_cast<Variable<T>>(output.lock());
+            X->grad += backward(Y->grad, X->body);
+        }
         Tensor<T> forward(const Tensor<T>& x) const{
             Tensor<T> y = x.copy();
             y.apply([](T& t){ t = t*t; }); // y = x*x
@@ -301,31 +307,29 @@ namespace gamma{
     something<T> square(something<T> x_){
         shared_ptr<Function> f = make_shared<Square<T>>();
         Variables X{x_};
-        Variables Y = f->forward(X);
-        for(sVar x : X) x->addUser(f);
-        for(sVar y : Y) y->setFunc(f);
-        return dynamic_pointer_cast<Variable<T>>(Y[0]);
+        sVar Y = f->forward(X);
+        Y->creator = f;
+        return dynamic_pointer_cast<Variable<T>>(Y);
     }
-
 
 
     template <typename T>
     class Exp: public Function{
-    protected:
-        something<T> X, Y;
     public:
-
         Exp():Function(){}
         ~Exp() override = default;
-        Variables forward(Variables input_) override{
+        sVar forward(Variables input_) override{
             input = input_;
-            X = dynamic_pointer_cast<Variable<T>>(input[0]);
-            Y = make<T>(forward(X->body));
-            output = Variables{Y};
-            return output;
+            something<T> X = dynamic_pointer_cast<Variable<T>>(input[0]);
+            something<T> Y = make<T>(forward(X->body));
+            output = Y;
+            return output.lock();
         }
-        void backward() override{ X->grad += backward(Y->grad, X->body); }
-
+        void backward() override{
+            something<T> X = dynamic_pointer_cast<Variable<T>>(input[0]);
+            something<T> Y = dynamic_pointer_cast<Variable<T>>(output.lock());
+            X->grad += backward(Y->grad, X->body);
+        }
         Tensor<T> forward(const Tensor<T>& x) const{
             Tensor<T> y = x.copy();
             y.apply([](T& p){ p = exp(p); }); // y = e^x
@@ -345,30 +349,30 @@ namespace gamma{
     something<T> exp(something<T> x_){
         shared_ptr<Function> f = make_shared<Exp<T>>();
         Variables X{x_};
-        Variables Y = f->forward(X);
-        for(sVar x : X) x->addUser(f);
-        for(sVar y : Y) y->setFunc(f);
-        return dynamic_pointer_cast<Variable<T>>(Y[0]);
+        sVar Y = f->forward(X);
+        Y->creator = f;
+        return dynamic_pointer_cast<Variable<T>>(Y);
     }
 
 
 
     template <typename T>
     class Add: public Function{
-    protected:
-        something<T> X1, X2, Y;
     public:
         Add():Function(){}
         ~Add() override = default;
-        Variables forward(Variables input_) override{
+        sVar forward(Variables input_) override{
             input = input_;
-            X1 = dynamic_pointer_cast<Variable<T>>(input[0]);
-            X2 = dynamic_pointer_cast<Variable<T>>(input[1]);
-            Y = make<T>(forward(X1->body, X2->body));
-            output = Variables{Y};
-            return output;
+            something<T> X1 = dynamic_pointer_cast<Variable<T>>(input[0]);
+            something<T> X2 = dynamic_pointer_cast<Variable<T>>(input[1]);
+            something<T> Y = make<T>(forward(X1->body, X2->body));
+            output = Y;
+            return output.lock();
         }
         void backward() override{
+            something<T> X1 = dynamic_pointer_cast<Variable<T>>(input[0]);
+            something<T> X2 = dynamic_pointer_cast<Variable<T>>(input[1]);
+            something<T> Y = dynamic_pointer_cast<Variable<T>>(output.lock());
             X1->grad += backward(Y->grad);
             X2->grad += backward(Y->grad);
         }
@@ -390,10 +394,9 @@ namespace gamma{
     something<T> add(something<T> x1, something<T> x2){
         shared_ptr<Function> f = make_shared<Add<T>>();
         Variables X{x1,x2};
-        Variables Y = f->forward(X);
-        for(sVar x : X) x->addUser(f);
-        for(sVar y : Y) y->setFunc(f);
-        return dynamic_pointer_cast<Variable<T>>(Y[0]);
+        sVar Y = f->forward(X);
+        Y->creator = f;
+        return dynamic_pointer_cast<Variable<T>>(Y);
     }
 
 }
@@ -404,31 +407,28 @@ namespace gamma{
 
 
 int main() {
+    {
+        auto O = gamma::make<float>(0.5);
+        auto A = gamma::square(O);
+        auto B = gamma::exp(A);
+        auto C = gamma::square(B);
+        C->print();
 
-    auto x = gamma::make<float>(0.5);
-    auto A = gamma::square(x);
-    auto B = gamma::exp(A);
-    auto C = gamma::square(B);
-    C->print();
+        C->backward();
+        C->printGrad();
+        B->printGrad();
+        A->printGrad();
+        O->printGrad();
+    }
 
-    C->backward();
-    C->printGrad();
-    B->printGrad();
-    A->printGrad();
+    auto x = gamma::make<double>(2.0);
+    auto a = gamma::square(x);
+    auto y = gamma::add(gamma::square(a), gamma::square(a));
+    y->backward();
+    x->print(); a->print(); y->print();
     x->printGrad();
 
-    auto y = gamma::make<double>(2.0);
-    auto z = gamma::make<double>(3.0);
-    auto w = gamma::add(gamma::square(y), gamma::square(z));
-    auto k = gamma::add(y,y);
-    auto v = gamma::add(w,k); // v = (y^2+z^2)+2y
-    w->print(); k->print();
-    v->print();
 
-    v->backward();
-    k->printGrad();
-    w->printGrad();
-    y->printGrad();
 
     return 0;
 }
